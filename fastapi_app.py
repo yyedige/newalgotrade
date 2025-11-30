@@ -18,12 +18,19 @@ PIPELINE_STATUS = {
     "is_running": False,
 }
 
-NOTEBOOK_ORDER = [
-    "data_load.ipynb",
-    "data_processer.ipynb",
-    "lstm.ipynb",
-    "backtest.ipynb",
+# We will fill NOTEBOOK_PATHS at import time
+project_root = Path(__file__).resolve().parent      # NEWALGOTRADE
+
+NOTEBOOK_PATHS = [
+    project_root / "data_load.ipynb",                  # in root
+    project_root / "data_processer.ipynb",   # in model/
+    project_root / "model" / "lstm.ipynb",
+    project_root / "backtest.ipynb",
 ]
+
+# All executed notebooks go here
+executed_dir = project_root / "executed"
+executed_dir.mkdir(exist_ok=True)
 
 
 def _log(msg: str):
@@ -44,11 +51,6 @@ def run_pipeline():
 
     PIPELINE_STATUS["is_running"] = True
 
-    project_root = Path(__file__).resolve().parent      # NEWALGOTRADE
-    model_dir = project_root / "model"
-    executed_dir = model_dir / "executed"
-    executed_dir.mkdir(exist_ok=True)
-
     start_time = datetime.utcnow()
     PIPELINE_STATUS.update(
         {
@@ -63,25 +65,24 @@ def run_pipeline():
     _log("Pipeline run started")
 
     try:
-        for nb_name in NOTEBOOK_ORDER:
-            input_nb = model_dir / nb_name
-            output_nb = executed_dir / f"{input_nb.stem}_executed.ipynb"
+        for nb_path in NOTEBOOK_PATHS:
+            if not nb_path.exists():
+                raise FileNotFoundError(f"Notebook not found: {nb_path}")
 
-            if not input_nb.exists():
-                raise FileNotFoundError(f"Notebook not found: {input_nb}")
+            PIPELINE_STATUS["current_step"] = f"running {nb_path.name}"
+            _log(f"Executing notebook: {nb_path}")
 
-            PIPELINE_STATUS["current_step"] = f"running {nb_name}"
-            _log(f"Executing notebook: {input_nb}")
+            output_nb = executed_dir / f"{nb_path.stem}_executed.ipynb"
 
             pm.execute_notebook(
-                input_path=str(input_nb),
+                input_path=str(nb_path),
                 output_path=str(output_nb),
                 parameters={},
                 progress_bar=False,
                 report_mode=False,
             )
 
-            _log(f"Finished notebook: {input_nb}")
+            _log(f"Finished notebook: {nb_path}")
 
         PIPELINE_STATUS["current_step"] = "idle"
         PIPELINE_STATUS["last_run_ok"] = True
@@ -115,7 +116,7 @@ async def on_startup():
     asyncio.create_task(periodic_runner())
 
 
-# Optional manual trigger endpoint (kept if you still want it)
+# Optional manual trigger endpoint
 @app.post("/run-pipeline")
 async def run_pipeline_endpoint(background_tasks: BackgroundTasks):
     """Manually start the full NVDA LSTM pipeline in the background."""
@@ -127,3 +128,14 @@ async def run_pipeline_endpoint(background_tasks: BackgroundTasks):
 async def status():
     """Check last pipeline run status and log."""
     return PIPELINE_STATUS
+
+
+# -------- allow `python fastapi_app.py` --------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "fastapi_app:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+    )
