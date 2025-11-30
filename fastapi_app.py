@@ -18,19 +18,21 @@ PIPELINE_STATUS = {
     "is_running": False,
 }
 
-# We will fill NOTEBOOK_PATHS at import time
-project_root = Path(__file__).resolve().parent      # NEWALGOTRADE
+# NEWALGOTRADE root (this file is here)
+project_root = Path(__file__).resolve().parent
 
+# Exact notebook locations
 NOTEBOOK_PATHS = [
-    project_root / "data_load.ipynb",                  # in root
-    project_root / "data_processer.ipynb",   # in model/
-    project_root / "model" / "lstm.ipynb",
-    project_root / "backtest.ipynb",
+    project_root / "data_load.ipynb",            # in root
+    project_root / "data_processer.ipynb",       # in root
+    project_root / "model" / "lstm.ipynb",       # in model/
+    project_root / "backtest.ipynb",             # in root
 ]
 
-# All executed notebooks go here
+# Executed notebooks will be saved in NEWALGOTRADE/executed
 executed_dir = project_root / "executed"
 executed_dir.mkdir(exist_ok=True)
+print("Executed notebooks will be saved to:", executed_dir)
 
 
 def _log(msg: str):
@@ -72,12 +74,14 @@ def run_pipeline():
             PIPELINE_STATUS["current_step"] = f"running {nb_path.name}"
             _log(f"Executing notebook: {nb_path}")
 
+            # Executed copy in NEWALGOTRADE/executed
             output_nb = executed_dir / f"{nb_path.stem}_executed.ipynb"
 
+            # Pass PROJECT_ROOT so notebooks can build correct paths
             pm.execute_notebook(
                 input_path=str(nb_path),
                 output_path=str(output_nb),
-                parameters={},
+                parameters={"PROJECT_ROOT": str(project_root)},
                 progress_bar=False,
                 report_mode=False,
             )
