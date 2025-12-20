@@ -2,10 +2,21 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import sqlite3
-from config import EMA_FAST, EMA_SLOW
 
-csv_path = Path("data") / "raw" / "data.csv"
-out_path = Path("data") / "processed" / "data_processed.sqlite"
+# Get project root (go up TWO levels from data/ folder to root)
+BASE_DIR = Path(__file__).parent.parent
+
+# Load config dynamically
+import importlib.util
+spec = importlib.util.spec_from_file_location("config", BASE_DIR / "config.py")
+config = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(config)
+
+EMA_FAST = config.EMA_FAST
+EMA_SLOW = config.EMA_SLOW
+
+csv_path = BASE_DIR / "data" / "raw" / "data.csv"
+out_path = BASE_DIR / "data" / "processed" / "data_processed.sqlite"
 
 if not csv_path.exists():
     raise FileNotFoundError(f"CSV not found at {csv_path.resolve()}")
