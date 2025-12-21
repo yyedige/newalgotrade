@@ -6,6 +6,7 @@ import logging
 import traceback
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+import base64
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -56,7 +57,7 @@ def run_script_sync(script_path: Path) -> tuple[int, str, str]:
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
-        timeout=300  # 5 minute timeout per script
+        timeout=600  # 10 minute timeout per script
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -91,7 +92,6 @@ async def run_pipeline():
             _log(f"Running step: {name} ({script.name})")
 
             try:
-                # Run script in thread pool to avoid blocking
                 returncode, stdout, stderr = await loop.run_in_executor(
                     executor, run_script_sync, script
                 )
@@ -110,7 +110,7 @@ async def run_pipeline():
                 _log(f"✅ Finished step: {name}")
 
             except subprocess.TimeoutExpired:
-                _log(f"❌ {name} timed out (exceeded 5 minutes)")
+                _log(f"❌ {name} timed out (exceeded 10 minutes)")
                 continue
             except Exception as step_error:
                 _log(f"❌ {name} exception: {type(step_error).__name__}: {str(step_error)}")
@@ -202,22 +202,49 @@ async def dashboard():
     last_error = s["last_error"] or "-"
 
     logs_html = "<br>".join(s["log"][-50:]) if s["log"] else "No logs yet."
+    
+    # Check if backtest chart exists
+    chart_html = ""
+    chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
+    if chart_path.exists():
+        # Read and encode image
+        with open(chart_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode()
+        chart_html = f'<img src="data:image/png;base64,{img_data}" style="width:100%; max-width:1200px; margin-top:20px;">'
+    
+    # Check if results CSV exists
+    results_table = ""
+    results_path = PROJECT_ROOT / "data" / "results" / "strategy_comparison.csv"
+    if results_path.exists():
+        import pandas as pd
+        df = pd.read_csv(results_path)
+        results_table = f"""
+        <h3>Strategy Performance Comparison</h3>
+        <div style="overflow-x:auto;">
+            {df.to_html(index=False, classes='results-table', border=0)}
+        </div>
+        """
 
     return f"""
     <html>
     <head>
-        <title>newalgotrade pipeline</title>
-        <meta http-equiv="refresh" content="5">
+        <title>newalgotrade dashboard</title>
+        <meta http-equiv="refresh" content="10">
         <style>
             body {{ font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }}
-            .card {{ background: white; border-radius: 8px; padding: 20px; max-width: 900px; margin: 0 auto; }}
-            .status-box {{ background: {status_color}; color: white; padding: 15px; border-radius: 6px; }}
+            .card {{ background: white; border-radius: 8px; padding: 20px; max-width: 1400px; margin: 0 auto; }}
+            .status-box {{ background: {status_color}; color: white; padding: 15px; border-radius: 6px; margin-bottom: 20px; }}
             .btn {{ display: inline-block; padding: 10px 18px; margin: 8px 4px 0 0;
                     background: #1976D2; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; }}
-            .btn:disabled {{ background: #9E9E9E; }}
+            .btn:hover {{ background: #1565C0; }}
             .logs {{ margin-top: 20px; background: #212121; color: #e0e0e0;
                      padding: 10px; border-radius: 4px; font-family: monospace;
-                     max-height: 400px; overflow-y: auto; font-size: 12px; }}
+                     max-height: 300px; overflow-y: auto; font-size: 12px; }}
+            .results-table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+            .results-table th {{ background: #1976D2; color: white; padding: 10px; text-align: left; }}
+            .results-table td {{ padding: 8px; border-bottom: 1px solid #ddd; }}
+            .results-table tr:hover {{ background: #f5f5f5; }}
+            .chart-container {{ margin-top: 30px; text-align: center; }}
         </style>
     </head>
     <body>
@@ -225,16 +252,25 @@ async def dashboard():
             <h1>newalgotrade pipeline</h1>
             <div class="status-box">
                 <h2>Status: {status_text}</h2>
-                <p>Running: {s["is_running"]}</p>
-                <p>Last start: {last_start}</p>
-                <p>Last end: {last_end}</p>
-                <p>Last ok: {s["last_run_ok"]}</p>
-                <p>Last error: {last_error}</p>
+                <p><strong>Running:</strong> {s["is_running"]}</p>
+                <p><strong>Last start:</strong> {last_start}</p>
+                <p><strong>Last end:</strong> {last_end}</p>
+                <p><strong>Last ok:</strong> {s["last_run_ok"]}</p>
+                <p><strong>Last error:</strong> {last_error}</p>
             </div>
+            
             <form action="/run-pipeline" method="post" style="display:inline;">
                 <button type="submit" class="btn">Run pipeline now</button>
             </form>
             <a href="/logs" class="btn">Get logs (JSON)</a>
+            
+            {results_table}
+            
+            <div class="chart-container">
+                <h3>Backtest Results</h3>
+                {chart_html if chart_html else "<p style='color:#999;'>Chart will appear after pipeline completes</p>"}
+            </div>
+            
             <h3>Recent logs</h3>
             <div class="logs">{logs_html}</div>
         </div>

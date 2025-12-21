@@ -1,21 +1,26 @@
 # ============================================
-# Ensemble Signal - Fixed for your files
+# Ensemble Signal - Fixed for Pipeline
 # ============================================
 
 from pathlib import Path
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import os
 
-BASE_DIR = Path.cwd()
+# Get project root
+BASE_DIR = Path(os.getcwd())
+if BASE_DIR.name == "models":
+    BASE_DIR = BASE_DIR.parent
+
+print(f"Project root: {BASE_DIR}")
 
 signals_dir = BASE_DIR / "data" / "signals"
 
-# Load all signal CSVs (use the files you actually have)
+# Load all signal CSVs
 ema_df = pd.read_csv(signals_dir / "ema_signal.csv", parse_dates=["Date"])
 sma_df = pd.read_csv(signals_dir / "sma_signal.csv", parse_dates=["Date"])
 arima_df = pd.read_csv(signals_dir / "arima_garch_signal.csv", parse_dates=["Date"])
-lstm_df = pd.read_csv(signals_dir / "bilstm_diff_signal.csv", parse_dates=["Date"])  # FIXED
+lstm_df = pd.read_csv(signals_dir / "bilstm_diff_signal.csv", parse_dates=["Date"])
 
 # Merge on Date
 ensemble = ema_df[["Date", "Close"]].copy()
@@ -126,8 +131,8 @@ print("="*80)
 best_sharpe = results_df.loc[results_df["Sharpe Ratio"].idxmax()]
 best_return = results_df.loc[results_df["Total Return (%)"].idxmax()]
 
-print(f"\n🏆 Best Sharpe Ratio: {best_sharpe['Strategy']} ({best_sharpe['Sharpe Ratio']:.2f})")
-print(f"🏆 Best Total Return: {best_return['Strategy']} ({best_return['Total Return (%)']:.2f}%)")
+print(f"\n*** Best Sharpe Ratio: {best_sharpe['Strategy']} ({best_sharpe['Sharpe Ratio']:.2f})")
+print(f"*** Best Total Return: {best_return['Strategy']} ({best_return['Total Return (%)']:.2f}%)")
 
 # ====================
 # SAVE RESULTS
@@ -143,40 +148,7 @@ results_df.to_csv(out_results_path, index=False)
 print(f"Saved performance metrics to: {out_results_path}")
 
 # ====================
-# PLOTS
+# NO PLOTS (automated pipeline)
 # ====================
 
-fig, axes = plt.subplots(2, 1, figsize=(15, 10))
-
-axes[0].plot(ensemble["Date"], ensemble["eq_market"], label="Buy & Hold", 
-             color="black", linewidth=2, linestyle="--", alpha=0.7)
-axes[0].plot(ensemble["Date"], ensemble["eq_ema"], label="EMA Crossover", linewidth=1.5)
-axes[0].plot(ensemble["Date"], ensemble["eq_sma"], label="SMA Crossover", linewidth=1.5)
-axes[0].plot(ensemble["Date"], ensemble["eq_arima"], label="ARIMA+GARCH", linewidth=1.5)
-axes[0].plot(ensemble["Date"], ensemble["eq_lstm"], label="BiLSTM", linewidth=1.5)
-axes[0].plot(ensemble["Date"], ensemble["eq_ensemble"], label="ENSEMBLE", 
-             color="red", linewidth=2.5)
-
-axes[0].set_title("All Strategies - Equity Curves", fontsize=14, fontweight='bold')
-axes[0].set_ylabel("Equity (Starting $1)", fontsize=12)
-axes[0].legend(loc='best', fontsize=10)
-axes[0].grid(alpha=0.3)
-
-axes[1].plot(ensemble["Date"], ensemble["eq_market"], label="Buy & Hold", 
-             color="black", linewidth=2, linestyle="--")
-axes[1].plot(ensemble["Date"], ensemble["eq_ensemble"], label="ENSEMBLE", 
-             color="red", linewidth=2.5)
-
-axes[1].set_title("Ensemble Strategy vs Buy & Hold", fontsize=14, fontweight='bold')
-axes[1].set_xlabel("Date", fontsize=12)
-axes[1].set_ylabel("Equity (Starting $1)", fontsize=12)
-axes[1].legend(loc='best', fontsize=11)
-axes[1].grid(alpha=0.3)
-
-plt.tight_layout()
-plot_path = BASE_DIR / "data" / "results" / "equity_curves.png"
-plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-print(f"Saved equity curve plot to: {plot_path}")
-plt.show()
-
-print("\n✅ Backtesting complete!")
+print("\nBacktesting complete!")

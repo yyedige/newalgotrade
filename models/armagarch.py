@@ -197,21 +197,3 @@ out_path.parent.mkdir(parents=True, exist_ok=True)
 
 signals_df.to_csv(out_path, index=False)
 print(f"\nSaved signals CSV to: {out_path}")
-
-# Plot
-plt.figure(figsize=(14, 7))
-
-strategy_curve = strategy_returns.cumsum()
-market_curve = market_returns.cumsum()
-
-plt.plot(forecast_dates, strategy_curve.values, color='green', 
-         label=f'ARIMA+GARCH Strategy (rebal every {REBALANCE_DAYS}d)', linewidth=2)
-plt.plot(forecast_dates, market_curve.values, color='red', 
-         label='Buy & Hold', linewidth=2)
-plt.xlabel('Date', fontsize=12)
-plt.ylabel('Cumulative Log Return', fontsize=12)
-plt.title(f'{TICKER} - ARIMA+GARCH Strategy vs Buy & Hold (from {START_DATE})', fontsize=14, fontweight='bold')
-plt.legend(loc='best', fontsize=11)
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
