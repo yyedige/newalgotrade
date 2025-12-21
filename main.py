@@ -51,13 +51,12 @@ def _log(msg: str):
 
 # ---------- sync subprocess runner ----------
 def run_script_sync(script_path: Path) -> tuple[int, str, str]:
-    """Run a Python script synchronously and return (returncode, stdout, stderr)"""
     result = subprocess.run(
         [sys.executable, str(script_path)],
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
-        timeout=600,  # 10 minute timeout per script
+        timeout=600,
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -170,6 +169,7 @@ async def root():
             "logs": "/logs",
             "dashboard": "/dashboard",
             "backtest_plot": "/backtest-plot",
+            "lstm_plot": "/lstm-plot",
         },
     }
 
@@ -188,12 +188,19 @@ async def run_pipeline_endpoint(bg: BackgroundTasks):
     bg.add_task(run_pipeline)
     return {"message": "Pipeline started"}
 
-# ---------- direct image URL ----------
+# ---------- direct image URLs ----------
 @app.get("/backtest-plot")
 async def backtest_plot():
     chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
     if not chart_path.exists():
         raise HTTPException(status_code=404, detail="Backtest plot not found")
+    return FileResponse(chart_path)
+
+@app.get("/lstm-plot")
+async def lstm_plot():
+    chart_path = PROJECT_ROOT / "data" / "results" / "lstm_direction_backtest.png"
+    if not chart_path.exists():
+        raise HTTPException(status_code=404, detail="LSTM plot not found")
     return FileResponse(chart_path)
 
 # ---------- dashboard ----------
@@ -213,7 +220,7 @@ async def dashboard():
 
     logs_html = "<br>".join(s["log"][-50:]) if s["log"] else "No logs yet."
 
-    # Inline chart for dashboard
+    # Ensemble chart for dashboard
     chart_html = ""
     chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
     if chart_path.exists():
@@ -275,12 +282,13 @@ async def dashboard():
                 <button type="submit" class="btn">Run pipeline now</button>
             </form>
             <a href="/logs" class="btn">Get logs (JSON)</a>
-            <a href="/backtest-plot" class="btn">Backtest plot (image)</a>
+            <a href="/backtest-plot" class="btn">Ensemble plot</a>
+            <a href="/lstm-plot" class="btn">LSTM plot</a>
 
             {results_table}
 
             <div class="chart-container">
-                <h3>Backtest Results</h3>
+                <h3>Backtest Results (Ensemble)</h3>
                 {chart_html if chart_html else "<p style='color:#999;'>Chart will appear after pipeline completes</p>"}
             </div>
 
