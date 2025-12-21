@@ -1,335 +1,308 @@
+# models/lstm.py
 # ============================================
-# FUTURE PREDICTION - Next 30 Days
+# LSTM DIRECTION CLASSIFIER ON PIPELINE DATA
 # ============================================
 
 from pathlib import Path
 import sqlite3
-import os
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from sklearn.preprocessing import RobustScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.preprocessing import MinMaxScaler
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SCRIPT_DIR = Path(__file__).resolve().parent
+BASE_DIR = SCRIPT_DIR.parent
+DB_PATH = BASE_DIR / "data" / "processed" / "data_processed.sqlite"
 
-# FIXED: Works from both project root and models folder
-BASE_DIR = Path(os.getcwd())
-if BASE_DIR.name == "models":
-    BASE_DIR = BASE_DIR.parent
+SEQ_LEN = 21
+TRAIN_SPLIT = 0.8
+BATCH_SIZE = 64
+EPOCHS = 50
+LR = 1e-3
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SEED = 66
 
-print(f"Project root: {BASE_DIR}")
+np.random.seed(SEED)
+torch.manual_seed(SEED)
 
-import importlib.util
-spec = importlib.util.spec_from_file_location("config", BASE_DIR / "config.py")
-config = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(config)
+# ----------------------------
+# Data loading utilities
+# ----------------------------
 
-TICKER = config.TICKER
+def load_from_sqlite(db_path: Path):
+    if not db_path.exists():
+        raise FileNotFoundError(f"SQLite DB not found: {db_path}")
+    with sqlite3.connect(db_path) as conn:
+        tables = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table';", conn)
+        table_name = tables["name"].iloc[0]
+        df = pd.read_sql(
+            f'SELECT Date, Close, Volume FROM "{table_name}" ORDER BY Date',
+            conn,
+            parse_dates=["Date"],
+        )
+    df = df.set_index("Date").sort_index()
+    return df
 
-# ====================
-# 1. LOAD DATA + FEATURES
-# ====================
-sqlite_path = BASE_DIR / "data" / "processed" / "data_processed.sqlite"
+def compute_returns(df, price_col="Close"):
+    px = df[price_col].astype(float)
+    rets = np.log(px / px.shift(1))
+    df = df.copy()
+    df["return"] = rets
+    df.dropna(inplace=True)
+    return df
 
-with sqlite3.connect(sqlite_path) as conn:
-    df = pd.read_sql("SELECT Date, Open, High, Low, Close, Volume FROM data ORDER BY Date;", conn, parse_dates=["Date"])
+def to_binary(y):
+    return (y > 0).astype(int)
 
-df.set_index("Date", inplace=True)
+def scale_features(df, feature_cols):
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    df_scaled = df.copy()
+    df_scaled[feature_cols] = scaler.fit_transform(df_scaled[feature_cols])
+    return df_scaled, scaler
 
-# Technical indicators
-df['returns'] = df['Close'].pct_change()
-df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
+def build_sequences(df, feature_cols, label_col="return", seq_len=SEQ_LEN):
+    features = df[feature_cols].values
+    labels = to_binary(df[label_col].values)
+    X, y = [], []
+    for i in range(len(df) - seq_len):
+        X.append(features[i:i+seq_len])
+        y.append(labels[i+seq_len])
+    X = np.array(X, dtype=np.float32)
+    y = np.array(y, dtype=np.int64)
+    return X, y
 
-for period in [5, 10, 20]:
-    df[f'MA{period}'] = df['Close'].rolling(period).mean()
-    df[f'MA{period}_ratio'] = df['Close'] / df[f'MA{period}']
+def train_val_split(X, y, train_split=TRAIN_SPLIT):
+    n = len(X)
+    n_train = int(n * train_split)
+    X_train, X_val = X[:n_train], X[n_train:]
+    y_train, y_val = y[:n_train], y[n_train:]
+    return X_train, y_train, X_val, y_val
 
-df['volatility_5'] = df['returns'].rolling(5).std()
-df['volatility_20'] = df['returns'].rolling(20).std()
+# ----------------------------
+# Dataset & Model
+# ----------------------------
 
-df['volume_ma10'] = df['Volume'].rolling(10).mean()
-df['volume_ratio'] = df['Volume'] / df['volume_ma10']
+class SeqDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.from_numpy(X)
+        self.y = torch.from_numpy(y)
 
-df['high_low_pct'] = (df['High'] - df['Low']) / df['Close']
-df['close_open_pct'] = (df['Close'] - df['Open']) / df['Open']
+    def __len__(self):
+        return len(self.X)
 
-df['price_diff'] = df['Close'].diff()
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
-df = df.dropna()
-print(f"Data: {len(df)} rows")
-
-# ====================
-# 2. PREPARE DATA
-# ====================
-feature_cols = ['Close', 'Volume', 'returns', 'log_returns', 'volatility_5', 'volatility_20',
-                'MA5_ratio', 'MA10_ratio', 'MA20_ratio', 'volume_ratio', 
-                'high_low_pct', 'close_open_pct']
-
-X = df[feature_cols].values
-y = df['price_diff'].values
-close_prices = df['Close'].values
-dates = df.index
-
-scaler_X = RobustScaler()
-scaler_y = RobustScaler()
-
-X_scaled = scaler_X.fit_transform(X)
-y_scaled = scaler_y.fit_transform(y.reshape(-1, 1)).flatten()
-
-train_size = int(len(X_scaled) * 0.8)
-
-def create_sequences(X, y, close, seq_length):
-    xs, ys, closes = [], [], []
-    for i in range(len(X) - seq_length - 1):
-        xs.append(X[i:i+seq_length])
-        ys.append(y[i+seq_length])
-        closes.append(close[i+seq_length])
-    return np.array(xs), np.array(ys), np.array(closes)
-
-seq_length = 20
-X_train_raw, y_train_raw, _ = create_sequences(X_scaled[:train_size], y_scaled[:train_size], 
-                                                 close_prices[:train_size], seq_length)
-X_test_raw, y_test_raw, test_closes = create_sequences(X_scaled[train_size:], y_scaled[train_size:],
-                                                        close_prices[train_size:], seq_length)
-
-X_train_t = torch.from_numpy(X_train_raw).float().to(device)
-y_train_t = torch.from_numpy(y_train_raw).float().to(device).unsqueeze(1)
-X_test_t = torch.from_numpy(X_test_raw).float().to(device)
-y_test_t = torch.from_numpy(y_test_raw).float().to(device).unsqueeze(1)
-
-# ====================
-# 3. MODEL
-# ====================
-class Attention(nn.Module):
-    def __init__(self, hidden_size):
+class LSTMClassifier(nn.Module):
+    def __init__(self, n_features, hidden_size=100, num_layers=2, dropout=0.2):
         super().__init__()
-        self.attention = nn.Linear(hidden_size * 2, 1)
-    
-    def forward(self, lstm_output):
-        attention_weights = torch.softmax(self.attention(lstm_output), dim=1)
-        context = torch.sum(attention_weights * lstm_output, dim=1)
-        return context
-
-class BiLSTMAttention(nn.Module):
-    def __init__(self, input_size, hidden_size=80, num_layers=3, dropout=0.3):
-        super().__init__()
-        
-        self.bilstm = nn.LSTM(
-            input_size=input_size,
+        self.lstm = nn.LSTM(
+            input_size=n_features,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
             dropout=dropout,
-            bidirectional=True
         )
-        
-        self.attention = Attention(hidden_size)
-        self.layer_norm1 = nn.LayerNorm(hidden_size * 2)
-        
-        self.fc1 = nn.Linear(hidden_size * 2, hidden_size)
-        self.bn1 = nn.BatchNorm1d(hidden_size)
+        self.fc1 = nn.Linear(hidden_size, 50)
         self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
-        
-        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
-        self.bn2 = nn.BatchNorm1d(hidden_size // 2)
-        
-        self.fc3 = nn.Linear(hidden_size // 2, 1)
-    
+        self.fc2 = nn.Linear(50, 1)
+        self.out = nn.Sigmoid()
+
     def forward(self, x):
-        lstm_out, _ = self.bilstm(x)
-        lstm_out = self.layer_norm1(lstm_out)
-        
-        context = self.attention(lstm_out)
-        
-        out = self.fc1(context)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.dropout(out)
-        
-        out = self.fc2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-        out = self.dropout(out)
-        
-        out = self.fc3(out)
-        
-        return out
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]
+        out = self.relu(self.fc1(out))
+        out = self.out(self.fc2(out))
+        return out.squeeze(1)
 
-model = BiLSTMAttention(input_size=X_train_raw.shape[2], hidden_size=80, num_layers=3).to(device)
+# ----------------------------
+# Baseline & training
+# ----------------------------
 
-# ====================
-# 4. TRAINING
-# ====================
-criterion = nn.HuberLoss()
-optimizer = optim.AdamW(model.parameters(), lr=0.002, weight_decay=1e-4)
-scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+def baseline_direction_accuracy(y_true):
+    n = len(y_true)
+    accuracies = []
+    for _ in range(1000):
+        y_rand = np.random.randint(0, 2, size=n)
+        acc = accuracy_score(y_true, y_rand)
+        accuracies.append(acc)
+    return float(np.mean(accuracies))
 
-num_epochs = 150
-best_loss = float('inf')
-patience_counter = 0
+def train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LR):
+    model.to(DEVICE)
+    criterion = nn.BCELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-print("Training model...")
-for epoch in range(1, num_epochs + 1):
-    model.train()
-    outputs = model(X_train_t)
-    loss = criterion(outputs, y_train_t)
-    
-    optimizer.zero_grad()
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    optimizer.step()
-    scheduler.step()
-    
+    for epoch in range(1, epochs + 1):
+        model.train()
+        train_losses = []
+        for X_batch, y_batch in train_loader:
+            X_batch = X_batch.to(DEVICE)
+            y_batch = y_batch.float().to(DEVICE)
+
+            optimizer.zero_grad()
+            y_pred = model(X_batch)
+            loss = criterion(y_pred, y_batch)
+            loss.backward()
+            optimizer.step()
+            train_losses.append(loss.item())
+
+        model.eval()
+        val_losses = []
+        all_val_preds, all_val_true = [], []
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                X_batch = X_batch.to(DEVICE)
+                y_batch = y_batch.float().to(DEVICE)
+                y_pred = model(X_batch)
+                loss = criterion(y_pred, y_batch)
+                val_losses.append(loss.item())
+
+                all_val_preds.extend((y_pred.cpu().numpy() > 0.5).astype(int))
+                all_val_true.extend(y_batch.cpu().numpy().astype(int))
+
+        val_acc = accuracy_score(all_val_true, all_val_preds)
+        print(
+            f"Epoch {epoch:03d} | "
+            f"Train loss: {np.mean(train_losses):.4f} | "
+            f"Val loss: {np.mean(val_losses):.4f} | "
+            f"Val acc: {val_acc:.4f}"
+        )
+
+    return model
+
+# ----------------------------
+# Robust evaluation
+# ----------------------------
+
+def evaluate_model(model, X_test, y_test, n_preds_mc=1):
     model.eval()
+    X_test_t = torch.from_numpy(X_test).to(DEVICE)
+    all_preds = []
     with torch.no_grad():
-        val_outputs = model(X_test_t)
-        val_loss = criterion(val_outputs, y_test_t)
-    
-    if val_loss < best_loss:
-        best_loss = val_loss
-        torch.save(model.state_dict(), 'best_bilstm_future.pth')
-        patience_counter = 0
+        for _ in range(n_preds_mc):
+            y_prob = model(X_test_t).cpu().numpy()
+            y_hat = (y_prob > 0.5).astype(int)
+            all_preds.append(y_hat)
+
+    votes = np.mean(np.stack(all_preds, axis=0), axis=0)
+    y_pred = (votes > 0.5).astype(int)
+
+    acc = accuracy_score(y_test, y_pred)
+
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
+    if cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel()
     else:
-        patience_counter += 1
-    
-    if patience_counter >= 30:
-        print(f"Early stopping at epoch {epoch}")
-        break
-    
-    if epoch % 20 == 0 or epoch == 1:
-        print(f"Epoch [{epoch}/{num_epochs}] Train: {loss.item():.6f}, Val: {val_loss.item():.6f}")
+        tn = fp = fn = tp = 0
+        if np.all(y_test == 0):
+            tn = cm[0, 0]
+        elif np.all(y_test == 1):
+            tp = cm[0, 0]
 
-model.load_state_dict(torch.load('best_bilstm_future.pth'))
-print("Model trained!\n")
+    print(f"Test accuracy: {acc:.4f}")
+    print(f"TN: {tn}, FP: {fp}, FN: {fn}, TP: {tp}")
+    return acc, cm, y_pred
 
-# ====================
-# 5. PREDICT NEXT 30 DAYS
-# ====================
-model.eval()
+# ----------------------------
+# Main entry point
+# ----------------------------
 
-# Start with last 20 days of actual data
-last_sequence = X_scaled[-seq_length:].copy()
-current_price = close_prices[-1]
-last_date = dates[-1]
+def main():
+    # 1. Load and prepare data
+    df = load_from_sqlite(DB_PATH)
+    df = compute_returns(df, price_col="Close")
 
-future_predictions = []
-future_dates = []
+    feature_cols = ["Close", "Volume", "return"]
+    df = df.dropna(subset=feature_cols)
 
-print(f"Starting prediction from: {last_date.strftime('%Y-%m-%d')}")
-print(f"Current price: ${current_price:.2f}\n")
+    df_scaled, scaler = scale_features(df, feature_cols)
 
-for day in range(1, 31):
-    # Predict next day
-    seq_tensor = torch.from_numpy(last_sequence.reshape(1, seq_length, -1)).float().to(device)
-    
+    X, y = build_sequences(df_scaled, feature_cols, label_col="return", seq_len=SEQ_LEN)
+
+    X_train, y_train, X_val, y_val = train_val_split(X, y, TRAIN_SPLIT)
+    n_val = len(X_val)
+    n_test = n_val // 2
+    X_test, y_test = X_val[:n_test], y_val[:n_test]
+    X_val, y_val = X_val[n_test:], y_val[n_test:]
+
+    base_acc = baseline_direction_accuracy(y_test)
+    print(f"Random baseline accuracy: {base_acc:.4f}")
+
+    train_ds = SeqDataset(X_train, y_train)
+    val_ds = SeqDataset(X_val, y_val)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
+
+    n_features = X.shape[2]
+    model = LSTMClassifier(n_features=n_features, hidden_size=100, num_layers=2, dropout=0.2)
+
+    # 2. Train and evaluate
+    model = train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LR)
+    evaluate_model(model, X_test, y_test, n_preds_mc=10)
+
+    # 3. Build full-series signals
+    X_all, y_all = build_sequences(df_scaled, feature_cols, label_col="return", seq_len=SEQ_LEN)
+    dates_all = df.index[SEQ_LEN:]
+
+    model.eval()
+    X_all_t = torch.from_numpy(X_all).to(DEVICE)
     with torch.no_grad():
-        pred_diff_scaled = model(seq_tensor).cpu().numpy().flatten()[0]
-    
-    # Inverse transform
-    pred_diff = scaler_y.inverse_transform([[pred_diff_scaled]])[0][0]
-    
-    # Calculate next price
-    next_price = current_price + pred_diff
-    future_predictions.append(next_price)
-    
-    # Generate next date (business days)
-    next_date = last_date + pd.Timedelta(days=1)
-    while next_date.weekday() >= 5:  # Skip weekends
-        next_date += pd.Timedelta(days=1)
-    future_dates.append(next_date)
-    
-    # Update sequence with predicted values
-    # Calculate new features based on prediction
-    new_features = np.zeros(len(feature_cols))
-    new_features[0] = next_price  # Close
-    new_features[1] = df['Volume'].iloc[-1]  # Use last known volume
-    new_features[2] = (next_price - current_price) / current_price  # returns
-    new_features[3] = np.log(next_price / current_price)  # log_returns
-    
-    # For other features, use approximations
-    new_features[4] = df['volatility_5'].iloc[-1]
-    new_features[5] = df['volatility_20'].iloc[-1]
-    
-    # MA ratios - approximate
-    new_features[6] = next_price / df['MA5'].iloc[-1]
-    new_features[7] = next_price / df['MA10'].iloc[-1]
-    new_features[8] = next_price / df['MA20'].iloc[-1]
-    
-    new_features[9] = 1.0  # volume_ratio
-    new_features[10] = df['high_low_pct'].iloc[-1]
-    new_features[11] = 0.0  # close_open_pct
-    
-    # Scale new features
-    new_features_scaled = scaler_X.transform(new_features.reshape(1, -1))[0]
-    
-    # Shift sequence
-    last_sequence = np.vstack([last_sequence[1:], new_features_scaled])
-    
-    # Update for next iteration
-    current_price = next_price
-    last_date = next_date
-    
-    if day % 5 == 0:
-        print(f"Day {day:2d} ({next_date.strftime('%Y-%m-%d')}): ${next_price:.2f}")
+        y_prob_all = model(X_all_t).cpu().numpy()
+    y_hat_all = (y_prob_all > 0.5).astype(int)
+    signals = np.where(y_hat_all == 1, 1, -1)
 
-# ====================
-# 6. SAVE PREDICTIONS (NO PLOTS FOR AUTOMATION)
-# ====================
-# Combine historical and future
-historical_dates = dates[-60:]  # Last 60 days
-historical_prices = close_prices[-60:]
+    signal_df = pd.DataFrame(
+        {
+            "Date": dates_all,
+            "Close": df["Close"].iloc[SEQ_LEN:].values,
+            "signalLSTM": signals,
+        }
+    )
 
-# Add confidence band (simple approximation)
-volatility = df['returns'].std()
-upper_bound = np.array(future_predictions) * (1 + 2 * volatility)
-lower_bound = np.array(future_predictions) * (1 - 2 * volatility)
+    signals_dir = BASE_DIR / "data" / "signals"
+    signals_dir.mkdir(parents=True, exist_ok=True)
+    out_signal_path = signals_dir / "lstm_direction_signal.csv"
+    signal_df.to_csv(out_signal_path, index=False)
+    print(f"LSTM direction signals saved to: {out_signal_path}")
 
-# ====================
-# 7. SAVE PREDICTIONS
-# ====================
-forecast_df = pd.DataFrame({
-    'Date': future_dates,
-    'Predicted_Price': future_predictions,
-    'Upper_Bound': upper_bound,
-    'Lower_Bound': lower_bound
-})
+    # 4. Backtest plot for this model
+    import matplotlib.pyplot as plt
 
-forecast_df.set_index('Date', inplace=True)
+    signal_df = signal_df.sort_values("Date").reset_index(drop=True)
+    signal_df["market_ret"] = signal_df["Close"].pct_change().fillna(0)
+    signal_df["strategy_ret"] = signal_df["signalLSTM"].shift(1).fillna(0) * signal_df["market_ret"]
+    signal_df["eq_market"] = (1 + signal_df["market_ret"]).cumprod()
+    signal_df["eq_lstm"] = (1 + signal_df["strategy_ret"]).cumprod()
 
-out_path = BASE_DIR / "data" / "predictions" / "30_day_forecast.csv"
-out_path.parent.mkdir(parents=True, exist_ok=True)
-forecast_df.to_csv(out_path)
+    results_dir = BASE_DIR / "data" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = results_dir / "lstm_direction_backtest.png"
 
-# Also save signals for backtest compatibility
-signals_path = BASE_DIR / "data" / "signals" / "bilstm_diff_signal.csv"
-signals_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.style.use("seaborn-v0_8")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(signal_df["Date"], signal_df["eq_market"], label="Buy & Hold", color="black", linewidth=1.5)
+    ax.plot(signal_df["Date"], signal_df["eq_lstm"], label="LSTM Direction", color="tab:blue", linewidth=1.5)
+    ax.set_title("LSTM Direction Strategy vs Buy & Hold")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Equity (normalised)")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"LSTM backtest plot saved to: {plot_path}")
 
-# Create simple signal based on price direction
-signal_df = pd.DataFrame({
-    'Date': future_dates,
-    'signal': [1 if future_predictions[i] > future_predictions[i-1] else -1 for i in range(len(future_predictions))]
-})
-signal_df.to_csv(signals_path, index=False)
+    # 5. Save model weights
+    models_dir = BASE_DIR / "models"
+    models_dir.mkdir(exist_ok=True)
+    out_path = models_dir / "lstm_stock_direction.pt"
+    torch.save(model.state_dict(), out_path)
+    print(f"Model saved to {out_path}")
 
-print(f"\n{'='*60}")
-print("30-DAY FORECAST SUMMARY")
-print(f"{'='*60}")
-print(f"Current Price: ${close_prices[-1]:.2f}")
-print(f"Predicted Price (Day 30): ${future_predictions[-1]:.2f}")
-print(f"Expected Change: ${future_predictions[-1] - close_prices[-1]:.2f} ({(future_predictions[-1]/close_prices[-1]-1)*100:.2f}%)")
-print(f"\nForecast saved to: {out_path}")
-print(f"Signals saved to: {signals_path}")
-print(f"{'='*60}\n")
-
-print("First 5 days forecast:")
-print(forecast_df.head(5))
-
-print("\nLast 5 days forecast:")
-print(forecast_df.tail(5))
+if __name__ == "__main__":
+    main()
