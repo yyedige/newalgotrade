@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # ---------- basic setup ----------
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 logging.basicConfig(
@@ -35,10 +34,9 @@ PIPELINE_STEPS = [
     ("EMA crossover",    PROJECT_ROOT / "models" / "EMAcrossover.py"),
     ("SMA crossover",    PROJECT_ROOT / "models" / "SMAcrossover.py"),
     ("ARIMA+GARCH",      PROJECT_ROOT / "models" / "armagarch.py"),
-    ("BiLSTM signals",   PROJECT_ROOT / "models" / "lstm.py"),
+    ("BiLSTM signals",   PROJECT_ROOT / "models" / "lstm.ipynb"),  # notebook, will NOT run
     ("Ensemble signals", PROJECT_ROOT / "total_signal.py"),
 ]
-
 
 def _log(msg: str):
     ts = datetime.utcnow().isoformat()
@@ -47,9 +45,7 @@ def _log(msg: str):
     PIPELINE_STATUS["log"].append(line)
     PIPELINE_STATUS["log"] = PIPELINE_STATUS["log"][-500:]
 
-
 # ---------- pipeline runner ----------
-
 async def run_pipeline():
     if PIPELINE_STATUS["is_running"]:
         _log("Pipeline already running, skipping new run.")
@@ -66,7 +62,12 @@ async def run_pipeline():
     try:
         for name, script in PIPELINE_STEPS:
             if not script.exists():
-                _log(f"⚠️  Script not found: {script}, skipping step.")
+                _log(f"⚠️ Script not found: {script}, skipping step.")
+                continue
+
+            # skip ipynb until you convert them
+            if script.suffix == ".ipynb":
+                _log(f"⚠️ Notebook step skipped (convert to .py first): {script}")
                 continue
 
             PIPELINE_STATUS["current_step"] = name
@@ -105,9 +106,7 @@ async def run_pipeline():
         PIPELINE_STATUS["current_step"] = None
         PIPELINE_STATUS["is_running"] = False
 
-
 # ---------- periodic runner ----------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _log("FastAPI startup")
@@ -123,9 +122,7 @@ async def lifespan(app: FastAPI):
     _log("FastAPI shutdown")
     task.cancel()
 
-
 # ---------- FastAPI app ----------
-
 app = FastAPI(title="newalgotrade API", lifespan=lifespan)
 
 app.add_middleware(
@@ -134,7 +131,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.get("/")
 async def root():
@@ -149,16 +145,13 @@ async def root():
         },
     }
 
-
 @app.get("/status")
 async def status():
     return JSONResponse(PIPELINE_STATUS)
 
-
 @app.get("/logs")
 async def logs():
     return {"lines": PIPELINE_STATUS["log"][-200:]}
-
 
 @app.post("/run-pipeline")
 async def run_pipeline_endpoint(bg: BackgroundTasks):
@@ -166,7 +159,6 @@ async def run_pipeline_endpoint(bg: BackgroundTasks):
         raise HTTPException(status_code=409, detail="Pipeline already running")
     bg.add_task(run_pipeline)
     return {"message": "Pipeline started"}
-
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
@@ -187,7 +179,7 @@ async def dashboard():
     return f"""
     <html>
     <head>
-        <title>newalgotrade dashboard</title>
+        <title>newalgotrade pipeline</title>
         <style>
             body {{ font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }}
             .card {{ background: white; border-radius: 8px; padding: 20px; max-width: 900px; margin: 0 auto; }}
@@ -220,8 +212,6 @@ async def dashboard():
     </html>
     """
 
-
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
