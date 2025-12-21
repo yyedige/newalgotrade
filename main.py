@@ -37,7 +37,7 @@ PIPELINE_STEPS = [
     ("EMA crossover",    PROJECT_ROOT / "models" / "EMAcrossover.py"),
     ("SMA crossover",    PROJECT_ROOT / "models" / "SMAcrossover.py"),
     ("ARIMA+GARCH",      PROJECT_ROOT / "models" / "armagarch.py"),
-    ("BiLSTM signals",   PROJECT_ROOT / "models" / "lstm.ipynb"),
+    ("BiLSTM signals",   PROJECT_ROOT / "models" / "lstm.py"),
     ("Ensemble signals", PROJECT_ROOT / "total_signal.py"),
 ]
 

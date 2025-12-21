@@ -18,7 +18,12 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-BASE_DIR = Path(os.getcwd()).parent
+# FIXED: Works from both project root and models folder
+BASE_DIR = Path(os.getcwd())
+if BASE_DIR.name == "models":
+    BASE_DIR = BASE_DIR.parent
+
+print(f"Project root: {BASE_DIR}")
 
 import importlib.util
 spec = importlib.util.spec_from_file_location("config", BASE_DIR / "config.py")
@@ -275,40 +280,16 @@ for day in range(1, 31):
         print(f"Day {day:2d} ({next_date.strftime('%Y-%m-%d')}): ${next_price:.2f}")
 
 # ====================
-# 6. VISUALIZATION
+# 6. SAVE PREDICTIONS (NO PLOTS FOR AUTOMATION)
 # ====================
 # Combine historical and future
 historical_dates = dates[-60:]  # Last 60 days
 historical_prices = close_prices[-60:]
 
-fig, ax = plt.subplots(figsize=(15, 7))
-
-# Plot historical
-ax.plot(historical_dates, historical_prices, label="Historical", color="blue", linewidth=2)
-
-# Plot future predictions
-ax.plot(future_dates, future_predictions, label="30-Day Forecast", 
-        color="green", linewidth=2, linestyle='--', marker='o', markersize=3)
-
 # Add confidence band (simple approximation)
 volatility = df['returns'].std()
 upper_bound = np.array(future_predictions) * (1 + 2 * volatility)
 lower_bound = np.array(future_predictions) * (1 - 2 * volatility)
-
-ax.fill_between(future_dates, lower_bound, upper_bound, alpha=0.2, color='green')
-
-# Vertical line at prediction start
-ax.axvline(x=dates[-1], color='red', linestyle='--', linewidth=1, alpha=0.7)
-ax.text(dates[-1], ax.get_ylim()[1]*0.95, 'Forecast Start', rotation=0, color='red')
-
-ax.set_title(f"{TICKER} - 30-Day Price Forecast", fontsize=14, fontweight='bold')
-ax.set_xlabel("Date")
-ax.set_ylabel("Price ($)")
-ax.legend()
-ax.grid(alpha=0.3)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
 
 # ====================
 # 7. SAVE PREDICTIONS
@@ -326,6 +307,17 @@ out_path = BASE_DIR / "data" / "predictions" / "30_day_forecast.csv"
 out_path.parent.mkdir(parents=True, exist_ok=True)
 forecast_df.to_csv(out_path)
 
+# Also save signals for backtest compatibility
+signals_path = BASE_DIR / "data" / "signals" / "bilstm_diff_signal.csv"
+signals_path.parent.mkdir(parents=True, exist_ok=True)
+
+# Create simple signal based on price direction
+signal_df = pd.DataFrame({
+    'Date': future_dates,
+    'signal': [1 if future_predictions[i] > future_predictions[i-1] else -1 for i in range(len(future_predictions))]
+})
+signal_df.to_csv(signals_path, index=False)
+
 print(f"\n{'='*60}")
 print("30-DAY FORECAST SUMMARY")
 print(f"{'='*60}")
@@ -333,10 +325,11 @@ print(f"Current Price: ${close_prices[-1]:.2f}")
 print(f"Predicted Price (Day 30): ${future_predictions[-1]:.2f}")
 print(f"Expected Change: ${future_predictions[-1] - close_prices[-1]:.2f} ({(future_predictions[-1]/close_prices[-1]-1)*100:.2f}%)")
 print(f"\nForecast saved to: {out_path}")
+print(f"Signals saved to: {signals_path}")
 print(f"{'='*60}\n")
 
-print("First 10 days forecast:")
-print(forecast_df.head(10))
+print("First 5 days forecast:")
+print(forecast_df.head(5))
 
-print("\nLast 10 days forecast:")
-print(forecast_df.tail(10))
+print("\nLast 5 days forecast:")
+print(forecast_df.tail(5))
