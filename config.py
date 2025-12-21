@@ -1,5 +1,5 @@
 # Ticker
-TICKER = "AAPL"
+TICKER = "GSPC"
 
 # Data Collection
 DATA_START_DATE = "2018-01-01"
