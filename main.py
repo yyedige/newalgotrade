@@ -193,15 +193,15 @@ async def run_pipeline_endpoint(bg: BackgroundTasks):
 async def backtest_plot():
     chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
     if not chart_path.exists():
-        raise HTTPException(status_code=404, detail="Backtest plot not found")
-    return FileResponse(chart_path)
+        raise HTTPException(status_code=404, detail="Ensemble backtest plot not found")
+    return FileResponse(chart_path, media_type="image/png")
 
 @app.get("/lstm-plot")
 async def lstm_plot():
     chart_path = PROJECT_ROOT / "data" / "results" / "lstm_direction_backtest.png"
     if not chart_path.exists():
-        raise HTTPException(status_code=404, detail="LSTM plot not found")
-    return FileResponse(chart_path)
+        raise HTTPException(status_code=404, detail="LSTM backtest plot not found")
+    return FileResponse(chart_path, media_type="image/png")
 
 # ---------- dashboard ----------
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -220,18 +220,33 @@ async def dashboard():
 
     logs_html = "<br>".join(s["log"][-50:]) if s["log"] else "No logs yet."
 
-    # Ensemble chart for dashboard
-    chart_html = ""
-    chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
-    if chart_path.exists():
-        with open(chart_path, "rb") as f:
+    # --- Ensemble chart ---
+    ensemble_chart_html = ""
+    ensemble_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
+    if ensemble_path.exists():
+        with open(ensemble_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode()
-        chart_html = (
+        ensemble_chart_html = (
             f'<img src="data:image/png;base64,{img_data}" '
             f'style="width:100%; max-width:1200px; margin-top:20px;">'
         )
+    else:
+        ensemble_chart_html = "<p style='color:#999;'>Ensemble chart will appear after pipeline completes</p>"
 
-    # Results table
+    # --- LSTM chart ---
+    lstm_chart_html = ""
+    lstm_path = PROJECT_ROOT / "data" / "results" / "lstm_direction_backtest.png"
+    if lstm_path.exists():
+        with open(lstm_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode()
+        lstm_chart_html = (
+            f'<img src="data:image/png;base64,{img_data}" '
+            f'style="width:100%; max-width:1200px; margin-top:20px;">'
+        )
+    else:
+        lstm_chart_html = "<p style='color:#999;'>LSTM chart will appear after pipeline completes</p>"
+
+    # --- Results table ---
     results_table = ""
     results_path = PROJECT_ROOT / "data" / "results" / "strategy_comparison.csv"
     if results_path.exists():
@@ -268,7 +283,7 @@ async def dashboard():
     </head>
     <body>
         <div class="card">
-            <h1>newalgotrade pipeline</h1>
+            <h1>📊 newalgotrade pipeline</h1>
             <div class="status-box">
                 <h2>Status: {status_text}</h2>
                 <p><strong>Running:</strong> {s["is_running"]}</p>
@@ -279,20 +294,25 @@ async def dashboard():
             </div>
 
             <form action="/run-pipeline" method="post" style="display:inline;">
-                <button type="submit" class="btn">Run pipeline now</button>
+                <button type="submit" class="btn">▶️ Run pipeline now</button>
             </form>
-            <a href="/logs" class="btn">Get logs (JSON)</a>
-            <a href="/backtest-plot" class="btn">Ensemble plot</a>
-            <a href="/lstm-plot" class="btn">LSTM plot</a>
+            <a href="/logs" class="btn">📄 Get logs (JSON)</a>
+            <a href="/backtest-plot" class="btn" target="_blank">📈 Ensemble plot</a>
+            <a href="/lstm-plot" class="btn" target="_blank">🤖 LSTM plot</a>
 
             {results_table}
 
             <div class="chart-container">
-                <h3>Backtest Results (Ensemble)</h3>
-                {chart_html if chart_html else "<p style='color:#999;'>Chart will appear after pipeline completes</p>"}
+                <h3>📈 Backtest Results (Ensemble)</h3>
+                {ensemble_chart_html}
             </div>
 
-            <h3>Recent logs</h3>
+            <div class="chart-container">
+                <h3>🤖 LSTM Direction Strategy</h3>
+                {lstm_chart_html}
+            </div>
+
+            <h3>📋 Recent logs</h3>
             <div class="logs">{logs_html}</div>
         </div>
     </body>
