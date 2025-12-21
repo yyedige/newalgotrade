@@ -281,3 +281,35 @@ async def dashboard():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
+# ====================
+# PLOTS FOR DASHBOARD
+# ====================
+
+import matplotlib.pyplot as plt
+
+plot_path = BASE_DIR / "data" / "results" / "ensemble_backtest.png"
+plot_path.parent.mkdir(parents=True, exist_ok=True)
+
+plt.style.use("seaborn-v0_8")
+
+fig, ax = plt.subplots(figsize=(12, 6))
+
+ax.plot(ensemble["Date"], ensemble["eq_market"], label="Buy & Hold", color="black", linewidth=1.5)
+ax.plot(ensemble["Date"], ensemble["eq_ema"], label="EMA Crossover", linewidth=1.2)
+ax.plot(ensemble["Date"], ensemble["eq_sma"], label="SMA Crossover", linewidth=1.2)
+ax.plot(ensemble["Date"], ensemble["eq_arima"], label="ARIMA+GARCH", linewidth=1.2)
+ax.plot(ensemble["Date"], ensemble["eq_lstm"], label="BiLSTM", linewidth=1.2)
+ax.plot(ensemble["Date"], ensemble["eq_ensemble"], label="Ensemble (Vote)", linewidth=2.0, color="darkred")
+
+ax.set_title(f"Strategy Equity Curves - {TICKER}")
+ax.set_xlabel("Date")
+ax.set_ylabel("Equity (normalised)")
+ax.legend(loc="upper left")
+ax.grid(True, alpha=0.3)
+
+fig.tight_layout()
+fig.savefig(plot_path, dpi=150)
+plt.close(fig)
+
+print(f"Saved backtest plot to: {plot_path}")
