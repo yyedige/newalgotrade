@@ -30,8 +30,8 @@ PIPELINE_STATUS = {
 }
 
 PIPELINE_STEPS = [
-    ("Data load",        PROJECT_ROOT / "data_load.py"),
-    ("Data processing",  PROJECT_ROOT / "data_processer.py"),
+    ("Data load",        PROJECT_ROOT / "data" / "data_load.py"),
+    ("Data processing",  PROJECT_ROOT / "data" "data_processer.py"),
     ("EMA crossover",    PROJECT_ROOT / "models" / "EMAcrossover.py"),
     ("SMA crossover",    PROJECT_ROOT / "models" / "SMAcrossover.py"),
     ("ARIMA+GARCH",      PROJECT_ROOT / "models" / "armagarch.py"),
