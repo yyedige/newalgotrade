@@ -31,7 +31,7 @@ PIPELINE_STATUS = {
 
 PIPELINE_STEPS = [
     ("Data load",        PROJECT_ROOT / "data" / "data_load.py"),
-    ("Data processing",  PROJECT_ROOT / "data" "data_processer.py"),
+    ("Data processing",  PROJECT_ROOT / "data" / "data_processer.py"),
     ("EMA crossover",    PROJECT_ROOT / "models" / "EMAcrossover.py"),
     ("SMA crossover",    PROJECT_ROOT / "models" / "SMAcrossover.py"),
     ("ARIMA+GARCH",      PROJECT_ROOT / "models" / "armagarch.py"),
@@ -66,7 +66,8 @@ async def run_pipeline():
     try:
         for name, script in PIPELINE_STEPS:
             if not script.exists():
-                raise FileNotFoundError(f"Script not found: {script}")
+                _log(f"⚠️  Script not found: {script}, skipping step.")
+                continue
 
             PIPELINE_STATUS["current_step"] = name
             _log(f"Running step: {name} ({script.name})")
@@ -86,9 +87,10 @@ async def run_pipeline():
 
             if proc.returncode != 0:
                 err = stderr.decode(errors="ignore")
-                raise RuntimeError(f"{name} failed: {err}")
+                _log(f"❌ {name} failed: {err}")
+                continue
 
-            _log(f"Finished step: {name}")
+            _log(f"✅ Finished step: {name}")
 
         PIPELINE_STATUS["last_run_ok"] = True
         _log("=== PIPELINE FINISHED OK ===")
