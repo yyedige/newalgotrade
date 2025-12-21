@@ -3,6 +3,9 @@ from datetime import datetime
 import asyncio
 import sys
 import logging
+import traceback
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -34,7 +37,7 @@ PIPELINE_STEPS = [
     ("EMA crossover",    PROJECT_ROOT / "models" / "EMAcrossover.py"),
     ("SMA crossover",    PROJECT_ROOT / "models" / "SMAcrossover.py"),
     ("ARIMA+GARCH",      PROJECT_ROOT / "models" / "armagarch.py"),
-    ("BiLSTM signals",   PROJECT_ROOT / "models" / "lstm.ipynb"),  # notebook, will NOT run
+    ("BiLSTM signals",   PROJECT_ROOT / "models" / "lstm.ipynb"),
     ("Ensemble signals", PROJECT_ROOT / "total_signal.py"),
 ]
 
@@ -44,6 +47,18 @@ def _log(msg: str):
     log.info(msg)
     PIPELINE_STATUS["log"].append(line)
     PIPELINE_STATUS["log"] = PIPELINE_STATUS["log"][-500:]
+
+# ---------- sync subprocess runner ----------
+def run_script_sync(script_path: Path) -> tuple[int, str, str]:
+    """Run a Python script synchronously and return (returncode, stdout, stderr)"""
+    result = subprocess.run(
+        [sys.executable, str(script_path)],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT),
+        timeout=300  # 5 minute timeout per script
+    )
+    return result.returncode, result.stdout, result.stderr
 
 # ---------- pipeline runner ----------
 async def run_pipeline():
@@ -60,12 +75,14 @@ async def run_pipeline():
     _log("=== PIPELINE START ===")
 
     try:
+        executor = ThreadPoolExecutor(max_workers=1)
+        loop = asyncio.get_event_loop()
+
         for name, script in PIPELINE_STEPS:
             if not script.exists():
                 _log(f"⚠️ Script not found: {script}, skipping step.")
                 continue
 
-            # skip ipynb until you convert them
             if script.suffix == ".ipynb":
                 _log(f"⚠️ Notebook step skipped (convert to .py first): {script}")
                 continue
@@ -73,33 +90,42 @@ async def run_pipeline():
             PIPELINE_STATUS["current_step"] = name
             _log(f"Running step: {name} ({script.name})")
 
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(script),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
+            try:
+                # Run script in thread pool to avoid blocking
+                returncode, stdout, stderr = await loop.run_in_executor(
+                    executor, run_script_sync, script
+                )
 
-            if stdout:
-                out_lines = stdout.decode(errors="ignore").strip().splitlines()
-                if out_lines:
-                    _log(out_lines[-1])
+                if stdout:
+                    out_lines = stdout.strip().splitlines()
+                    if out_lines:
+                        _log(f"Output: {out_lines[-1]}")
 
-            if proc.returncode != 0:
-                err = stderr.decode(errors="ignore")
-                _log(f"❌ {name} failed: {err}")
+                if returncode != 0:
+                    _log(f"❌ {name} failed with exit code {returncode}")
+                    if stderr:
+                        _log(f"Error: {stderr[:500]}")
+                    continue
+
+                _log(f"✅ Finished step: {name}")
+
+            except subprocess.TimeoutExpired:
+                _log(f"❌ {name} timed out (exceeded 5 minutes)")
                 continue
-
-            _log(f"✅ Finished step: {name}")
+            except Exception as step_error:
+                _log(f"❌ {name} exception: {type(step_error).__name__}: {str(step_error)}")
+                _log(f"Traceback: {traceback.format_exc()[:500]}")
+                continue
 
         PIPELINE_STATUS["last_run_ok"] = True
         _log("=== PIPELINE FINISHED OK ===")
 
     except Exception as e:
         PIPELINE_STATUS["last_run_ok"] = False
-        PIPELINE_STATUS["last_error"] = str(e)
-        _log(f"PIPELINE ERROR: {e}")
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        PIPELINE_STATUS["last_error"] = error_msg
+        _log(f"PIPELINE ERROR: {error_msg}")
+        _log(f"Traceback: {traceback.format_exc()[:500]}")
 
     finally:
         PIPELINE_STATUS["last_run_end"] = datetime.utcnow().isoformat()
@@ -115,7 +141,7 @@ async def lifespan(app: FastAPI):
         while True:
             _log("⏰ Scheduled pipeline run")
             await run_pipeline()
-            await asyncio.sleep(180)  # 3 minutes
+            await asyncio.sleep(180)
 
     task = asyncio.create_task(periodic_runner())
     yield
@@ -142,6 +168,7 @@ async def root():
             "status": "/status",
             "run": "/run-pipeline",
             "logs": "/logs",
+            "dashboard": "/dashboard",
         },
     }
 
@@ -180,12 +207,13 @@ async def dashboard():
     <html>
     <head>
         <title>newalgotrade pipeline</title>
+        <meta http-equiv="refresh" content="5">
         <style>
             body {{ font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }}
             .card {{ background: white; border-radius: 8px; padding: 20px; max-width: 900px; margin: 0 auto; }}
             .status-box {{ background: {status_color}; color: white; padding: 15px; border-radius: 6px; }}
             .btn {{ display: inline-block; padding: 10px 18px; margin: 8px 4px 0 0;
-                    background: #1976D2; color: white; text-decoration: none; border-radius: 4px; }}
+                    background: #1976D2; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; }}
             .btn:disabled {{ background: #9E9E9E; }}
             .logs {{ margin-top: 20px; background: #212121; color: #e0e0e0;
                      padding: 10px; border-radius: 4px; font-family: monospace;
@@ -203,7 +231,9 @@ async def dashboard():
                 <p>Last ok: {s["last_run_ok"]}</p>
                 <p>Last error: {last_error}</p>
             </div>
-            <a href="/run-pipeline" class="btn">Run pipeline</a>
+            <form action="/run-pipeline" method="post" style="display:inline;">
+                <button type="submit" class="btn">Run pipeline now</button>
+            </form>
             <a href="/logs" class="btn">Get logs (JSON)</a>
             <h3>Recent logs</h3>
             <div class="logs">{logs_html}</div>
