@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import base64
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -57,7 +57,7 @@ def run_script_sync(script_path: Path) -> tuple[int, str, str]:
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
-        timeout=600  # 10 minute timeout per script
+        timeout=600,  # 10 minute timeout per script
     )
     return result.returncode, result.stdout, result.stderr
 
@@ -169,6 +169,7 @@ async def root():
             "run": "/run-pipeline",
             "logs": "/logs",
             "dashboard": "/dashboard",
+            "backtest_plot": "/backtest-plot",
         },
     }
 
@@ -187,6 +188,15 @@ async def run_pipeline_endpoint(bg: BackgroundTasks):
     bg.add_task(run_pipeline)
     return {"message": "Pipeline started"}
 
+# ---------- direct image URL ----------
+@app.get("/backtest-plot")
+async def backtest_plot():
+    chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
+    if not chart_path.exists():
+        raise HTTPException(status_code=404, detail="Backtest plot not found")
+    return FileResponse(chart_path)
+
+# ---------- dashboard ----------
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     s = PIPELINE_STATUS
@@ -202,17 +212,19 @@ async def dashboard():
     last_error = s["last_error"] or "-"
 
     logs_html = "<br>".join(s["log"][-50:]) if s["log"] else "No logs yet."
-    
-    # Check if backtest chart exists
+
+    # Inline chart for dashboard
     chart_html = ""
     chart_path = PROJECT_ROOT / "data" / "results" / "ensemble_backtest.png"
     if chart_path.exists():
-        # Read and encode image
         with open(chart_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode()
-        chart_html = f'<img src="data:image/png;base64,{img_data}" style="width:100%; max-width:1200px; margin-top:20px;">'
-    
-    # Check if results CSV exists
+        chart_html = (
+            f'<img src="data:image/png;base64,{img_data}" '
+            f'style="width:100%; max-width:1200px; margin-top:20px;">'
+        )
+
+    # Results table
     results_table = ""
     results_path = PROJECT_ROOT / "data" / "results" / "strategy_comparison.csv"
     if results_path.exists():
@@ -258,19 +270,20 @@ async def dashboard():
                 <p><strong>Last ok:</strong> {s["last_run_ok"]}</p>
                 <p><strong>Last error:</strong> {last_error}</p>
             </div>
-            
+
             <form action="/run-pipeline" method="post" style="display:inline;">
                 <button type="submit" class="btn">Run pipeline now</button>
             </form>
             <a href="/logs" class="btn">Get logs (JSON)</a>
-            
+            <a href="/backtest-plot" class="btn">Backtest plot (image)</a>
+
             {results_table}
-            
+
             <div class="chart-container">
                 <h3>Backtest Results</h3>
                 {chart_html if chart_html else "<p style='color:#999;'>Chart will appear after pipeline completes</p>"}
             </div>
-            
+
             <h3>Recent logs</h3>
             <div class="logs">{logs_html}</div>
         </div>
@@ -281,35 +294,3 @@ async def dashboard():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
-# ====================
-# PLOTS FOR DASHBOARD
-# ====================
-
-import matplotlib.pyplot as plt
-
-plot_path = BASE_DIR / "data" / "results" / "ensemble_backtest.png"
-plot_path.parent.mkdir(parents=True, exist_ok=True)
-
-plt.style.use("seaborn-v0_8")
-
-fig, ax = plt.subplots(figsize=(12, 6))
-
-ax.plot(ensemble["Date"], ensemble["eq_market"], label="Buy & Hold", color="black", linewidth=1.5)
-ax.plot(ensemble["Date"], ensemble["eq_ema"], label="EMA Crossover", linewidth=1.2)
-ax.plot(ensemble["Date"], ensemble["eq_sma"], label="SMA Crossover", linewidth=1.2)
-ax.plot(ensemble["Date"], ensemble["eq_arima"], label="ARIMA+GARCH", linewidth=1.2)
-ax.plot(ensemble["Date"], ensemble["eq_lstm"], label="BiLSTM", linewidth=1.2)
-ax.plot(ensemble["Date"], ensemble["eq_ensemble"], label="Ensemble (Vote)", linewidth=2.0, color="darkred")
-
-ax.set_title(f"Strategy Equity Curves - {TICKER}")
-ax.set_xlabel("Date")
-ax.set_ylabel("Equity (normalised)")
-ax.legend(loc="upper left")
-ax.grid(True, alpha=0.3)
-
-fig.tight_layout()
-fig.savefig(plot_path, dpi=150)
-plt.close(fig)
-
-print(f"Saved backtest plot to: {plot_path}")
